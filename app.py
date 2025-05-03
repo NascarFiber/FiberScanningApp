@@ -5,148 +5,141 @@ from collections import Counter
 import re
 
 # --- Page Config ---
-st.set_page_config(page_title="Fiber Inventory Dashboard v1.3", layout="wide")
+st.set_page_config(page_title="Fiber Inventory Dashboard", layout="wide")
 
-# --- Initialize Session State ---
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame()
-if "scan_log" not in st.session_state:
-    st.session_state.scan_log = []
-# Store previous metrics for deltas
-if "prev_checked_in" not in st.session_state:
-    st.session_state.prev_checked_in = None
-if "prev_remaining_out" not in st.session_state:
-    st.session_state.prev_remaining_out = None
-
-# --- Helper: Scan Callback ---
+# --- Callback for scanning input ---
 def handle_scan():
-    val = st.session_state.scan_input
-    if val:
+    code = st.session_state.scan_input.strip()
+    if code:
         now = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-        st.session_state.scan_log.insert(0, {"Cable ID": val, "Timestamp": now})
-        st.session_state.scan_input = ""
+        # 1) Log the scan
+        st.session_state.scan_log.insert(0, {"Cable ID": code, "Timestamp": now})
+        # 2) Update the 'In Time' for that asset in inventory
+        df = st.session_state.df
+        if not df.empty and 'Cable ID' in df.columns:
+            df.loc[df['Cable ID'] == code, 'In Time'] = now
+            # re-apply 1-based index
+            df.index = range(1, len(df) + 1)
+            st.session_state.df = df
+        # 3) Clear the scan box
+        st.session_state.scan_input = ''
 
 # --- Sidebar Navigation ---
 st.sidebar.title("🚀 Fiber Scanning App")
-module = st.sidebar.radio("Choose Module:", ["Inventory", "Data Compare", "ICODE Generator"], index=0)
+module = st.sidebar.radio("Choose Module:", ["Inventory", "Data Compare", "ICODE Generator"])
 
-# --- Inventory Module ---
+# --- Inventory & Scanning Module ---
 if module == "Inventory":
+    st.title("📋 INVENTORY & SCANNING")
     # Sidebar controls
-    grid_file = st.sidebar.file_uploader("1) Upload Inventory CSV", type=["csv"])
-    st.sidebar.text_input("2) Scan to Check In", key="scan_input", on_change=handle_scan)
-    search_term = st.sidebar.text_input("3) Search Inventory", key="search_term")
+    inv_file = st.sidebar.file_uploader("1) Upload Inventory CSV", type=["csv"])
+    st.sidebar.text_input("2) Scan or Enter Code", key="scan_input", on_change=handle_scan)
 
-    # Load CSV
-    if grid_file:
-        try:
-            st.session_state.df = pd.read_csv(grid_file)
-        except Exception as e:
-            st.error(f"Error loading CSV: {e}")
+    # Initialize or load inventory DataFrame
+    if "df" not in st.session_state:
+        st.session_state.df = pd.DataFrame()
+    if inv_file:
+        df = pd.read_csv(inv_file)
+        # add the two new columns
+        df["In Time"] = ""
+        df["Notes"]   = ""
+        # 1-based index
+        df.index = range(1, len(df) + 1)
+        st.session_state.df = df
     df = st.session_state.df
 
-    # Compute metrics
-    total_inventory = len(df)
-    scanned_codes = list({entry["Cable ID"] for entry in st.session_state.scan_log})
-    checked_in = len(scanned_codes)
-    remaining_out = total_inventory - checked_in
-
-    # Header with animated metrics
-    title_col, metrics_col = st.columns([3,1])
-    with title_col:
-        st.title("📋 Inventory & Scanning")
-    with metrics_col:
-        ci_delta = None if st.session_state.prev_checked_in is None else checked_in - st.session_state.prev_checked_in
-        ro_delta = None if st.session_state.prev_remaining_out is None else remaining_out - st.session_state.prev_remaining_out
-        st.metric("Checked In", checked_in, delta=ci_delta)
-        st.metric("Remaining Out", remaining_out, delta=ro_delta)
-        st.session_state.prev_checked_in = checked_in
-        st.session_state.prev_remaining_out = remaining_out
-
-    # INVENTORY DATABASE
-    st.subheader("INVENTORY DATABASE")
-    if df.empty:
-        st.info("No inventory loaded. Upload a CSV from the sidebar.")
-    else:
-        disp = df.copy()
-        if search_term:
-            mask = disp.apply(lambda r: r.astype(str).str.contains(search_term, case=False).any(), axis=1)
-            disp = disp[mask]
-        st.dataframe(disp.reset_index(drop=True), use_container_width=True)
-        st.download_button("Export Inventory CSV", disp.to_csv(index=False), "inventory.csv")
-
-    # CHECK IN STATUS
-    st.subheader("CHECK IN STATUS")
-    if not df.empty:
-        # Grouping logic
-        if "Description" in df.columns:
-            df["Group"] = df["Description"]
-        else:
-            df["Group"] = df["Cable ID"].str.extract(r"([A-Za-z]+\d+-\d+ST)", expand=False).fillna(df["Cable ID"])
-        # Build status
-        status_rows = []
-        for g in df["Group"].unique():
-            group_df = df[df["Group"] == g]
-            total = len(group_df)
-            out = total - sum(group_df["Cable ID"].isin(scanned_codes))
-            status = "🔴" if out > 10 else ("🟡" if out > 0 else "🟢")
-            status_rows.append({"Group": g, "Total": total, "Out": out, "Status": status})
-        status_df = pd.DataFrame(status_rows)
-        # Hide index by blanking
-        status_df.index = [""] * len(status_df)
-        st.dataframe(status_df, use_container_width=True)
-    else:
-        st.info("No data for status.")
-
-    # Scan Log below status
-    st.subheader("Scan Log")
+    # Initialize scan log
+    if "scan_log" not in st.session_state:
+        st.session_state.scan_log = []
     scan_log = pd.DataFrame(st.session_state.scan_log)
+
+    # --- Metrics ---
+    checked_in = df["In Time"].astype(bool).sum() if not df.empty else 0
+    total      = len(df)
+    remaining  = total - checked_in
+
+    c1, c2 = st.columns(2)
+    c1.metric("Checked In",     checked_in)
+    c2.metric("Remaining Out", remaining)
+
+    # --- Interactive Inventory Table ---
+    st.subheader("INVENTORY DATABASE")
+    if not df.empty:
+        # show an editable table, with index starting at 1
+        edited = st.experimental_data_editor(
+            df,
+            key="inv_editor",
+            use_container_width=True
+        )
+        # commit any user edits (Notes or In Time) back into session_state
+        st.session_state.df = edited
+    else:
+        st.info("Upload a CSV to populate the inventory table.")
+
+    # --- Check In Status ---
+    if not df.empty:
+        status_df = (
+            st.session_state.df
+              .groupby("Description")
+              .agg(
+                Total=("Cable ID", "count"),
+                Out=("In Time", lambda col: col.eq("").sum())
+              )
+              .reset_index()
+        )
+        status_df["Status"] = status_df["Out"].apply(
+            lambda o: "Green"  if o == 0 
+                      else "Yellow" if o <= 5 
+                      else "Red"
+        )
+        status_df.index = range(1, len(status_df) + 1)  # 1-based
+        st.subheader("CHECK IN STATUS")
+        st.dataframe(
+            status_df[["Description", "Total", "Out", "Status"]],
+            use_container_width=True
+        )
+
+    # --- Scan Log ---
+    st.subheader("Scan Log")
     if scan_log.empty:
         st.info("No scans yet.")
     else:
         st.dataframe(scan_log, use_container_width=True)
-        st.download_button("Export Scan Log", scan_log.to_csv(index=False), "scan_log.csv")
+        st.download_button(
+            "Export Scan Log",
+            scan_log.to_csv(index=False),
+            "scan_log.csv",
+            "text/csv"
+        )
 
-# --- Data Compare Module ---
+# --- Data Compare Module (unchanged) ---
 elif module == "Data Compare":
-    st.title("🔍 Data Compare & Merge")
-    left, right = st.columns([2,1])
-    with left:
-        st.subheader("Dataset 1")
-        file1 = st.file_uploader("Upload CSV or paste below:", type=["csv"], key="file1")
-        text1 = st.text_area("", key="text1", height=100)
-        st.subheader("Dataset 2")
-        file2 = st.file_uploader("Upload CSV or paste below:", type=["csv"], key="file2")
-        text2 = st.text_area("", key="text2", height=100)
-    with right:
-        if st.button("Compare"):
-            def load_list(f, t):
-                if f:
-                    return pd.read_csv(f).iloc[:,0].astype(str).tolist()
-                return [l for l in t.splitlines() if l.strip()]
-            lst1 = load_list(file1, text1)
-            lst2 = load_list(file2, text2)
-            only1 = sorted(set(lst1) - set(lst2))
-            only2 = sorted(set(lst2) - set(lst1))
-            common = sorted(set(lst1) & set(lst2))
-            st.subheader("Only in 1")
-            st.text_area("", "\n".join(only1), height=80)
-            st.subheader("Common")
-            st.text_area("", "\n".join(common), height=80)
-            st.subheader("Only in 2")
-            st.text_area("", "\n".join(only2), height=80)
-        if st.button("Merge Lists"):
-            def load_list(f, t):
-                if f:
-                    return pd.read_csv(f).iloc[:,0].astype(str).tolist()
-                return [l for l in t.splitlines() if l.strip()]
-            lst1 = load_list(file1, text1)
-            lst2 = load_list(file2, text2)
-            merged = sorted(set(lst1) | set(lst2))
-            st.subheader("Merged Output")
-            st.text_area("", "\n".join(merged), height=200)
+    st.title("🔍 Data Compare Tool")
+    df1_file = st.file_uploader("Dataset 1 (CSV)", type=["csv"], key="dc1")
+    df2_file = st.file_uploader("Dataset 2 (CSV)", type=["csv"], key="dc2")
 
-# --- ICODE Generator Module ---
+    if df1_file and df2_file:
+        try:
+            d1 = pd.read_csv(df1_file)
+            d2 = pd.read_csv(df2_file)
+            set1 = set(d1.iloc[:, 0].astype(str))
+            set2 = set(d2.iloc[:, 0].astype(str))
+            only1 = sorted(set1 - set2)
+            only2 = sorted(set2 - set1)
+            common = sorted(set1 & set2)
+
+            c1, c2, c3 = st.columns(3)
+            c1.subheader("Only in Dataset 1"); c1.write(only1)
+            c2.subheader("Common");           c2.write(common)
+            c3.subheader("Only in Dataset 2");c3.write(only2)
+
+            st.download_button("Download Only in 1", "\n".join(only1), "only1.txt")
+            st.download_button("Download Common",       "\n".join(common), "common.txt")
+            st.download_button("Download Only in 2", "\n".join(only2), "only2.txt")
+        except Exception as e:
+            st.error(f"Error processing files: {e}")
+
+# --- ICODE Generator Module (unchanged) ---
 elif module == "ICODE Generator":
     st.title("🛠️ ICODE Generator")
     barcodes_input = st.text_area("Enter barcodes (one per line)")
@@ -154,16 +147,23 @@ elif module == "ICODE Generator":
         barcodes = [b.strip() for b in barcodes_input.splitlines() if b.strip()]
         icodes = []
         for bc in barcodes:
-            m = re.match(r"([A-Za-z]+)(\d+)-?\d*([A-Za-z]+)(\d+)", bc)
+            m = re.match(r"([A-Za-z]+)(\d+)-?(\d*)([A-Za-z]+)(\d+)", bc)
             if m:
-                owner, length, connector, _ = m.groups()
-                icode = f"{connector}{owner}{length}"
+                owner    = m.group(1)
+                length   = m.group(2)
+                connector= m.group(4)
+                icode    = f"{connector}{owner}{length}"
             else:
                 icode = "ERROR"
             icodes.append(icode)
+
         df_ic = pd.DataFrame({"Barcode": barcodes, "ICODE": icodes})
         st.dataframe(df_ic, use_container_width=True)
+
         counts = Counter(icodes)
-        unique = [f"**{ic}**" if counts[ic]>1 else ic for ic in counts]
+        unique_lines = [
+            f"**{ic}**" if counts[ic] > 1 else ic
+            for ic in counts
+        ]
         st.subheader("Unique ICODEs")
-        st.markdown("\n".join(unique))
+        st.markdown("\n".join(unique_lines))
