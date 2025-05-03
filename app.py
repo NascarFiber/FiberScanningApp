@@ -7,40 +7,48 @@ import re
 # --- Page Config ---
 st.set_page_config(page_title="Fiber Inventory Dashboard", layout="wide")
 
-# --- Callback for scanning input ---
+# --- Scan callback ---
 def handle_scan():
     code = st.session_state.scan_input.strip()
-    if code:
-        now = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-        # 1) Log the scan
-        st.session_state.scan_log.insert(0, {"Cable ID": code, "Timestamp": now})
-        # 2) Update the 'In Time' for that asset in inventory
-        df = st.session_state.df
-        if not df.empty and 'Cable ID' in df.columns:
-            df.loc[df['Cable ID'] == code, 'In Time'] = now
-            # re-apply 1-based index
-            df.index = range(1, len(df) + 1)
-            st.session_state.df = df
-        # 3) Clear the scan box
-        st.session_state.scan_input = ''
+    if not code:
+        return
+    now = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+    # 1) Log the scan
+    st.session_state.scan_log.insert(0, {"Cable ID": code, "Timestamp": now})
+    # 2) Stamp In Time in the inventory table
+    df = st.session_state.df
+    if not df.empty and "Cable ID" in df.columns:
+        mask = df["Cable ID"] == code
+        df.loc[mask, "In Time"] = now
+        # re-apply 1-based index
+        df.index = range(1, len(df) + 1)
+        st.session_state.df = df
+    # 3) Clear the scan box
+    st.session_state.scan_input = ""
 
-# --- Sidebar Navigation ---
+# --- Sidebar navigation ---
 st.sidebar.title("🚀 Fiber Scanning App")
 module = st.sidebar.radio("Choose Module:", ["Inventory", "Data Compare", "ICODE Generator"])
 
-# --- Inventory & Scanning Module ---
+# --- Inventory & Scanning ---
 if module == "Inventory":
     st.title("📋 INVENTORY & SCANNING")
-    # Sidebar controls
-    inv_file = st.sidebar.file_uploader("1) Upload Inventory CSV", type=["csv"])
-    st.sidebar.text_input("2) Scan or Enter Code", key="scan_input", on_change=handle_scan)
 
-    # Initialize or load inventory DataFrame
+    # Upload & Scan widgets
+    inv_file = st.sidebar.file_uploader("1) Upload Inventory CSV", type=["csv"])
+    st.sidebar.text_input(
+        "2) Scan or Enter Code",
+        key="scan_input",
+        on_change=handle_scan,
+        placeholder="Type or scan then Enter"
+    )
+
+    # Initialize DataFrame in session
     if "df" not in st.session_state:
         st.session_state.df = pd.DataFrame()
     if inv_file:
         df = pd.read_csv(inv_file)
-        # add the two new columns
+        # Add new columns
         df["In Time"] = ""
         df["Notes"]   = ""
         # 1-based index
@@ -58,45 +66,45 @@ if module == "Inventory":
     total      = len(df)
     remaining  = total - checked_in
 
-    c1, c2 = st.columns(2)
-    c1.metric("Checked In",     checked_in)
-    c2.metric("Remaining Out", remaining)
+    col1, col2 = st.columns(2)
+    col1.metric("Checked In", checked_in)
+    col2.metric("Remaining Out", remaining)
 
-    # --- Interactive Inventory Table ---
+    # --- Editable Inventory Table ---
     st.subheader("INVENTORY DATABASE")
-    if not df.empty:
-        # show an editable table, with index starting at 1
-        edited = st.experimental_data_editor(
+    if df.empty:
+        st.info("Upload a CSV to see your inventory here.")
+    else:
+        edited_df = st.data_editor(
             df,
             key="inv_editor",
+            hide_index=False,
             use_container_width=True
         )
-        # commit any user edits (Notes or In Time) back into session_state
-        st.session_state.df = edited
-    else:
-        st.info("Upload a CSV to populate the inventory table.")
+        # Commit edits (Notes or manual In Time edits)
+        st.session_state.df = edited_df
 
-    # --- Check In Status ---
+    # --- Check-In Status ---
     if not df.empty:
         status_df = (
             st.session_state.df
               .groupby("Description")
               .agg(
-                Total=("Cable ID", "count"),
-                Out=("In Time", lambda col: col.eq("").sum())
+                  Total=("Cable ID", "count"),
+                  Out=("In Time", lambda col: col.eq("").sum())
               )
               .reset_index()
         )
         status_df["Status"] = status_df["Out"].apply(
-            lambda o: "Green"  if o == 0 
-                      else "Yellow" if o <= 5 
+            lambda o: "Green"  if o == 0
+                      else "Yellow" if o <= 5
                       else "Red"
         )
-        status_df.index = range(1, len(status_df) + 1)  # 1-based
         st.subheader("CHECK IN STATUS")
         st.dataframe(
             status_df[["Description", "Total", "Out", "Status"]],
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
 
     # --- Scan Log ---
@@ -112,7 +120,7 @@ if module == "Inventory":
             "text/csv"
         )
 
-# --- Data Compare Module (unchanged) ---
+# --- Data Compare (unchanged) ---
 elif module == "Data Compare":
     st.title("🔍 Data Compare Tool")
     df1_file = st.file_uploader("Dataset 1 (CSV)", type=["csv"], key="dc1")
@@ -139,7 +147,7 @@ elif module == "Data Compare":
         except Exception as e:
             st.error(f"Error processing files: {e}")
 
-# --- ICODE Generator Module (unchanged) ---
+# --- ICODE Generator (unchanged) ---
 elif module == "ICODE Generator":
     st.title("🛠️ ICODE Generator")
     barcodes_input = st.text_area("Enter barcodes (one per line)")
@@ -149,10 +157,10 @@ elif module == "ICODE Generator":
         for bc in barcodes:
             m = re.match(r"([A-Za-z]+)(\d+)-?(\d*)([A-Za-z]+)(\d+)", bc)
             if m:
-                owner    = m.group(1)
-                length   = m.group(2)
-                connector= m.group(4)
-                icode    = f"{connector}{owner}{length}"
+                owner     = m.group(1)
+                length    = m.group(2)
+                connector = m.group(4)
+                icode     = f"{connector}{owner}{length}"
             else:
                 icode = "ERROR"
             icodes.append(icode)
