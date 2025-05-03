@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from collections import Counter
 import re
+from collections import Counter
 
 # --- Page Config ---
 st.set_page_config(page_title="Fiber Inventory Dashboard", layout="wide")
@@ -30,11 +30,11 @@ def handle_scan():
 st.sidebar.title("🚀 Fiber Scanning App")
 module = st.sidebar.radio("Choose Module:", ["Inventory", "Data Compare", "ICODE Generator"])
 
-# --- Inventory & Scanning ---
+# --- 1) INVENTORY & SCANNING ---
 if module == "Inventory":
     st.title("📋 INVENTORY & SCANNING")
 
-    # Upload & Scan widgets
+    # Sidebar: Upload + Scan input
     inv_file = st.sidebar.file_uploader("1) Upload Inventory CSV", type=["csv"])
     st.sidebar.text_input(
         "2) Scan or Enter Code",
@@ -43,15 +43,15 @@ if module == "Inventory":
         placeholder="Type or scan then Enter"
     )
 
-    # Initialize DataFrame in session
+    # Initialize or load DataFrame
     if "df" not in st.session_state:
         st.session_state.df = pd.DataFrame()
     if inv_file:
         df = pd.read_csv(inv_file)
-        # Add new columns
+        # add new columns
         df["In Time"] = ""
         df["Notes"]   = ""
-        # 1-based index
+        # set 1-based index
         df.index = range(1, len(df) + 1)
         st.session_state.df = df
     df = st.session_state.df
@@ -61,53 +61,52 @@ if module == "Inventory":
         st.session_state.scan_log = []
     scan_log = pd.DataFrame(st.session_state.scan_log)
 
-    # --- Metrics ---
-    checked_in = df["In Time"].astype(bool).sum() if not df.empty else 0
-    total      = len(df)
-    remaining  = total - checked_in
-
-    col1, col2 = st.columns(2)
-    col1.metric("Checked In", checked_in)
-    col2.metric("Remaining Out", remaining)
-
-    # --- Editable Inventory Table ---
+    # -- Editable Inventory Table --
     st.subheader("INVENTORY DATABASE")
     if df.empty:
-        st.info("Upload a CSV to see your inventory here.")
+        st.info("Upload a CSV to populate the inventory table.")
     else:
-        edited_df = st.data_editor(
+        edited = st.data_editor(
             df,
             key="inv_editor",
-            hide_index=False,
-            use_container_width=True
+            use_container_width=True,
+            hide_index=False  # keep the 1-based index visible
         )
-        # Commit edits (Notes or manual In Time edits)
-        st.session_state.df = edited_df
+        # Commit any edits back into session
+        st.session_state.df = edited
+        df = edited
 
-    # --- Check-In Status ---
-    if not df.empty:
+        # -- Metrics (recalc after table edits) --
+        total      = len(df)
+        checked_in = df["In Time"].astype(bool).sum()
+        remaining  = total - checked_in
+
+        c1, c2 = st.columns(2)
+        c1.metric("Checked In", checked_in)
+        c2.metric("Remaining Out", remaining)
+
+        # -- Check In Status with emoji indicators --
         status_df = (
-            st.session_state.df
+            df
               .groupby("Description")
               .agg(
-                  Total=("Cable ID", "count"),
-                  Out=("In Time", lambda col: col.eq("").sum())
+                 Total=("Cable ID", "count"),
+                 Out=("In Time", lambda col: col.eq("").sum())
               )
               .reset_index()
         )
+        # convert to emoji traffic lights
         status_df["Status"] = status_df["Out"].apply(
-            lambda o: "Green"  if o == 0
-                      else "Yellow" if o <= 5
-                      else "Red"
+            lambda o: "🟢" if o == 0 else ("🟡" if o <= 5 else "🔴")
         )
         st.subheader("CHECK IN STATUS")
         st.dataframe(
             status_df[["Description", "Total", "Out", "Status"]],
             use_container_width=True,
-            hide_index=True
+            hide_index=True   # hides the auto-index column
         )
 
-    # --- Scan Log ---
+    # -- Scan Log --
     st.subheader("Scan Log")
     if scan_log.empty:
         st.info("No scans yet.")
@@ -120,7 +119,7 @@ if module == "Inventory":
             "text/csv"
         )
 
-# --- Data Compare (unchanged) ---
+# --- 2) Data Compare (unchanged) ---
 elif module == "Data Compare":
     st.title("🔍 Data Compare Tool")
     df1_file = st.file_uploader("Dataset 1 (CSV)", type=["csv"], key="dc1")
@@ -137,17 +136,17 @@ elif module == "Data Compare":
             common = sorted(set1 & set2)
 
             c1, c2, c3 = st.columns(3)
-            c1.subheader("Only in Dataset 1"); c1.write(only1)
-            c2.subheader("Common");           c2.write(common)
-            c3.subheader("Only in Dataset 2");c3.write(only2)
+            c1.subheader("Only in Dataset 1");  c1.write(only1)
+            c2.subheader("Common");            c2.write(common)
+            c3.subheader("Only in Dataset 2");  c3.write(only2)
 
             st.download_button("Download Only in 1", "\n".join(only1), "only1.txt")
-            st.download_button("Download Common",       "\n".join(common), "common.txt")
+            st.download_button("Download Common",      "\n".join(common), "common.txt")
             st.download_button("Download Only in 2", "\n".join(only2), "only2.txt")
         except Exception as e:
             st.error(f"Error processing files: {e}")
 
-# --- ICODE Generator (unchanged) ---
+# --- 3) ICODE Generator (unchanged) ---
 elif module == "ICODE Generator":
     st.title("🛠️ ICODE Generator")
     barcodes_input = st.text_area("Enter barcodes (one per line)")
@@ -160,10 +159,10 @@ elif module == "ICODE Generator":
                 owner     = m.group(1)
                 length    = m.group(2)
                 connector = m.group(4)
-                icode     = f"{connector}{owner}{length}"
+                ic = f"{connector}{owner}{length}"
             else:
-                icode = "ERROR"
-            icodes.append(icode)
+                ic = "ERROR"
+            icodes.append(ic)
 
         df_ic = pd.DataFrame({"Barcode": barcodes, "ICODE": icodes})
         st.dataframe(df_ic, use_container_width=True)
